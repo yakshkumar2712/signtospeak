@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glove speaker</title>
+<style>
+:root{
+  --bg:#eef1ef; --fg:#16201c; --muted:#5d6b64; --card:#ffffff; --line:#cfd8d3;
+  --accent:#0f7a5a; --accent-fg:#ffffff; --bad:#b3261e;
+}
+@media (prefers-color-scheme:dark){
+  :root{--bg:#101614; --fg:#e8f0ec; --muted:#93a39b; --card:#18211e; --line:#2b3833;
+        --accent:#3ecf9f; --accent-fg:#06201a; --bad:#ff8a7d;}
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--fg);
+  font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:520px;margin:0 auto;padding:20px 16px 40px}
+h1{font-size:20px;margin:0 0 4px}
+#status{color:var(--muted);font-size:15px;margin:0 0 18px}
+#status.bad{color:var(--bad)}
+#word{min-height:180px;display:flex;align-items:center;justify-content:center;
+  text-align:center;font-size:clamp(44px,14vw,84px);font-weight:700;line-height:1.05;
+  background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;
+  word-break:break-word}
+#word.idle{font-size:20px;font-weight:400;color:var(--muted)}
+.row{display:flex;gap:10px;margin-top:14px}
+button{flex:1;font:inherit;font-size:17px;font-weight:600;padding:14px;border-radius:10px;
+  border:1px solid var(--line);background:var(--card);color:var(--fg)}
+button.main{background:var(--accent);color:var(--accent-fg);border-color:var(--accent)}
+button:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+button[hidden]{display:none}
+details{margin-top:22px;border-top:1px solid var(--line);padding-top:14px}
+summary{cursor:pointer;color:var(--muted)}
+label{display:block;margin-top:12px;font-size:14px;color:var(--muted)}
+input,select{width:100%;margin-top:4px;font:inherit;font-size:15px;padding:10px;border-radius:8px;
+  border:1px solid var(--line);background:var(--card);color:var(--fg)}
+#log{margin-top:18px;font-size:14px;color:var(--muted);list-style:none;padding:0}
+#log li{padding:4px 0;border-bottom:1px solid var(--line)}
+</style>
+</head>
+<body>
+<main>
+  <h1>Glove speaker</h1>
+  <p id="status">Not connected</p>
+
+  <div id="word" class="idle">Signs will appear here</div>
+
+  <div class="row">
+    <button id="connect" class="main">Connect to glove</button>
+    <button id="reconnect" hidden>Reconnect</button>
+  </div>
+  <div class="row">
+    <button id="test">Test voice</button>
+  </div>
+
+  <ul id="log"></ul>
+
+  <details>
+    <summary>Settings</summary>
+    <label>Voice language
+      <select id="lang">
+        <option value="en-IN">English (India)</option>
+        <option value="en-US">English (US)</option>
+        <option value="hi-IN">Hindi</option>
+      </select>
+    </label>
+    <label>Service UUID
+      <input id="svc" autocomplete="off" spellcheck="false">
+    </label>
+    <label>Characteristic UUID
+      <input id="chr" autocomplete="off" spellcheck="false">
+    </label>
+  </details>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const DEFAULTS = {
+  svc: "4fafc201-1fb5-459e-8fcc-c5c9c331914b",
+  chr: "beb5483e-36ac-4e3d-9f3b-bd0b3c1c0f4e",
+  lang: "en-IN"
+};
+
+let device = null;
+
+function load(){
+  let cfg = {};
+  try { cfg = JSON.parse(localStorage.getItem("glove-cfg") || "{}"); } catch(e){}
+  $("svc").value  = cfg.svc  || DEFAULTS.svc;
+  $("chr").value  = cfg.chr  || DEFAULTS.chr;
+  $("lang").value = cfg.lang || DEFAULTS.lang;
+}
+function save(){
+  try {
+    localStorage.setItem("glove-cfg", JSON.stringify({
+      svc: $("svc").value.trim(), chr: $("chr").value.trim(), lang: $("lang").value
+    }));
+  } catch(e){}
+}
+["svc","chr","lang"].forEach(id => $(id).addEventListener("change", save));
+
+function setStatus(text, bad){
+  $("status").textContent = text;
+  $("status").className = bad ? "bad" : "";
+}
+
+function speak(text){
+  if (!text) return;
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = $("lang").value;
+  speechSynthesis.speak(u);
+}
+
+function showWord(text){
+  const w = $("word");
+  w.textContent = text;
+  w.className = "";
+  const li = document.createElement("li");
+  li.textContent = new Date().toLocaleTimeString() + "  " + text;
+  $("log").prepend(li);
+  while ($("log").children.length > 8) $("log").lastChild.remove();
+}
+
+async function keepAwake(){
+  try { if (navigator.wakeLock) await navigator.wakeLock.request("screen"); } catch(e){}
+}
+
+async function link(){
+  const svc = $("svc").value.trim().toLowerCase();
+  const chr = $("chr").value.trim().toLowerCase();
+  setStatus("Connecting…");
+  const server = await device.gatt.connect();
+  const service = await server.getPrimaryService(svc);
+  const ch = await service.getCharacteristic(chr);
+  await ch.startNotifications();
+  ch.addEventListener("characteristicvaluechanged", e => {
+    const text = new TextDecoder().decode(e.target.value).trim();
+    if (text){ showWord(text); speak(text); }
+  });
+  setStatus("Connected to " + (device.name || "glove"));
+  $("connect").hidden = true;
+  $("reconnect").hidden = true;
+  keepAwake();
+  speak("Glove connected");
+}
+
+function onDisconnected(){
+  setStatus("Glove disconnected", true);
+  $("reconnect").hidden = false;
+}
+
+$("connect").addEventListener("click", async () => {
+  if (!navigator.bluetooth){
+    setStatus("Web Bluetooth is not available. Open this page in Chrome on Android.", true);
+    return;
+  }
+  save();
+  try {
+    device = await navigator.bluetooth.requestDevice({
+      acceptAllDevices: true,
+      optionalServices: [$("svc").value.trim().toLowerCase()]
+    });
+    device.addEventListener("gattserverdisconnected", onDisconnected);
+    await link();
+  } catch(e){
+    setStatus("Could not connect: " + e.message, true);
+  }
+});
+
+$("reconnect").addEventListener("click", async () => {
+  try { await link(); }
+  catch(e){ setStatus("Could not reconnect: " + e.message, true); }
+});
+
+$("test").addEventListener("click", () => speak("Hello, this is a test"));
+
+load();
+</script>
+</body>
+</html>
